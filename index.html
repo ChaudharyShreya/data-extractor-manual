@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Call Register Extractor</title>
+<style>
+  :root {
+    --border: #d8dce1;
+    --accent: #2f6f4f;
+    --accent-dark: #204e37;
+    --bg-alt: #f6f8f7;
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    margin: 0;
+    background: #fff;
+    color: #1c1c1c;
+  }
+  header {
+    padding: 24px 32px 16px;
+    border-bottom: 1px solid var(--border);
+  }
+  header h1 { margin: 0 0 4px; font-size: 20px; }
+  header p { margin: 0; color: #666; font-size: 14px; }
+  main { padding: 24px 32px 64px; max-width: 100%; }
+
+  .upload-panel {
+    display: flex;
+    gap: 24px;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    background: var(--bg-alt);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 20px;
+    margin-bottom: 24px;
+  }
+  .field { display: flex; flex-direction: column; gap: 6px; }
+  .field label { font-size: 13px; font-weight: 600; color: #333; }
+  .field input[type=file] { font-size: 13px; }
+
+  button {
+    background: var(--accent);
+    color: #fff;
+    border: none;
+    border-radius: 6px;
+    padding: 10px 18px;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  button:hover { background: var(--accent-dark); }
+  button:disabled { background: #aaa; cursor: not-allowed; }
+  button.secondary {
+    background: #fff;
+    color: var(--accent-dark);
+    border: 1px solid var(--accent);
+  }
+  button.secondary:hover { background: var(--bg-alt); }
+
+  #status { margin: 8px 0 0; font-size: 13px; color: #444; min-height: 18px; }
+  #status.error { color: #b3261e; }
+
+  #table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: 8px; }
+  table { border-collapse: collapse; font-size: 12.5px; white-space: nowrap; }
+  th, td { border: 1px solid var(--border); padding: 4px 6px; }
+  th { background: var(--bg-alt); position: sticky; top: 0; text-align: left; font-weight: 600; }
+  th.auto { background: #eaf3ee; }
+  td input {
+    border: none;
+    background: transparent;
+    font-size: 12.5px;
+    width: 130px;
+    padding: 3px;
+    font-family: inherit;
+  }
+  td.auto input { background: #f4faf6; }
+  td input:focus { outline: 2px solid var(--accent); background: #fff; }
+  tr td:first-child input, tr th:first-child { width: 50px; }
+  .row-actions { text-align: center; }
+  .row-actions button {
+    background: #fff;
+    color: #b3261e;
+    border: 1px solid #e0b4b0;
+    padding: 3px 8px;
+    font-size: 12px;
+  }
+  .row-actions button:hover { background: #fdf0ef; }
+
+  .actions-bar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin: 16px 0;
+  }
+  .legend { font-size: 12px; color: #666; display: flex; gap: 16px; align-items: center; }
+  .legend .swatch { display: inline-block; width: 12px; height: 12px; border-radius: 2px; margin-right: 4px; vertical-align: middle; }
+  .swatch.auto { background: #eaf3ee; border: 1px solid #bcd8c9; }
+  .swatch.blank { background: #fff; border: 1px solid var(--border); }
+
+  #preview-section { display: none; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Call Register Extractor</h1>
+  <p>Upload your Goal Sheet workbook and this month's zip of service reports. No lookups, no guessing — just what's literally on each report, ready for you to review and fill in the rest.</p>
+</header>
+
+<main>
+  <div class="upload-panel">
+    <div class="field">
+      <label for="xlsx-input">Goal Sheet workbook (.xlsx)</label>
+      <input type="file" id="xlsx-input" accept=".xlsx">
+    </div>
+    <div class="field">
+      <label for="zip-input">This month's reports (.zip)</label>
+      <input type="file" id="zip-input" accept=".zip">
+    </div>
+    <button id="extract-btn">Extract</button>
+  </div>
+
+  <div id="status"></div>
+
+  <div id="preview-section">
+    <div class="actions-bar">
+      <div class="legend">
+        <span><span class="swatch auto"></span>filled from the file</span>
+        <span><span class="swatch blank"></span>blank - fill in yourself</span>
+      </div>
+      <div>
+        <button class="secondary" id="add-row-btn">+ Add blank row</button>
+        <button id="generate-btn">Save &amp; Download</button>
+      </div>
+    </div>
+    <div id="table-wrap"></div>
+  </div>
+</main>
+
+<script>
+let state = { session_id: null, headers: [], auto_columns: [], rows: [] };
+
+const statusEl = document.getElementById('status');
+const previewSection = document.getElementById('preview-section');
+const tableWrap = document.getElementById('table-wrap');
+
+function setStatus(msg, isError = false) {
+  statusEl.textContent = msg;
+  statusEl.className = isError ? 'error' : '';
+}
+
+document.getElementById('extract-btn').addEventListener('click', async () => {
+  const xlsxFile = document.getElementById('xlsx-input').files[0];
+  const zipFile = document.getElementById('zip-input').files[0];
+  if (!xlsxFile || !zipFile) {
+    setStatus('Please choose both a workbook and a zip file.', true);
+    return;
+  }
+
+  setStatus('Extracting...');
+  const form = new FormData();
+  form.append('xlsx', xlsxFile);
+  form.append('zip', zipFile);
+
+  try {
+    const res = await fetch('/api/extract', { method: 'POST', body: form });
+    const data = await res.json();
+    if (!res.ok) {
+      setStatus(data.detail || 'Something went wrong.', true);
+      return;
+    }
+    state.session_id = data.session_id;
+    state.headers = data.headers;
+    state.auto_columns = data.auto_columns.map(String);
+    state.rows = data.rows;
+    renderTable();
+    setStatus(`Extracted ${state.rows.length} row(s) from the zip. Review below, then Save & Download.`);
+    previewSection.style.display = 'block';
+  } catch (e) {
+    setStatus('Could not reach the server: ' + e, true);
+  }
+});
+
+function renderTable() {
+  const numCols = state.headers.length;
+  let html = '<table><thead><tr><th></th>';
+  for (let c = 1; c <= numCols; c++) {
+    const isAuto = state.auto_columns.includes(String(c));
+    html += `<th class="${isAuto ? 'auto' : ''}">${state.headers[c - 1] || ('Col ' + c)}</th>`;
+  }
+  html += '</tr></thead><tbody>';
+
+  state.rows.forEach((row, rIdx) => {
+    html += `<tr data-row="${rIdx}"><td class="row-actions"><button data-remove="${rIdx}">✕</button></td>`;
+    for (let c = 1; c <= numCols; c++) {
+      const isAuto = state.auto_columns.includes(String(c));
+      const val = row[String(c)] ?? '';
+      html += `<td class="${isAuto ? 'auto' : ''}"><input data-row="${rIdx}" data-col="${c}" value="${escapeHtml(val)}"></td>`;
+    }
+    html += '</tr>';
+  });
+  html += '</tbody></table>';
+  tableWrap.innerHTML = html;
+
+  tableWrap.querySelectorAll('input').forEach(input => {
+    input.addEventListener('input', (e) => {
+      const r = e.target.dataset.row, c = e.target.dataset.col;
+      state.rows[r][c] = e.target.value;
+    });
+  });
+  tableWrap.querySelectorAll('[data-remove]').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      const idx = parseInt(e.target.dataset.remove, 10);
+      state.rows.splice(idx, 1);
+      renderTable();
+    });
+  });
+}
+
+document.getElementById('add-row-btn').addEventListener('click', () => {
+  const blank = {};
+  for (let c = 1; c <= state.headers.length; c++) blank[String(c)] = '';
+  state.rows.push(blank);
+  renderTable();
+});
+
+document.getElementById('generate-btn').addEventListener('click', async () => {
+  if (!state.session_id) {
+    setStatus('Extract some rows first.', true);
+    return;
+  }
+  setStatus('Generating updated workbook...');
+  try {
+    const res = await fetch('/api/generate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ session_id: state.session_id, rows: state.rows }),
+    });
+    if (!res.ok) {
+      const data = await res.json();
+      setStatus(data.detail || 'Something went wrong.', true);
+      return;
+    }
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'Goal_Sheet_updated.xlsx';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setStatus('Done - your updated workbook has downloaded.');
+  } catch (e) {
+    setStatus('Could not reach the server: ' + e, true);
+  }
+});
+
+function escapeHtml(str) {
+  return String(str).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+</script>
+
+</body>
+</html>
